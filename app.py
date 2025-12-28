@@ -61,6 +61,7 @@ st.warning("📋 Requirement: Upload 5s-interpolated data. Must contain `Time`, 
 uploaded_file = st.file_uploader("📂 Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
 if uploaded_file:
+    # ⚠️ 这里的 try 负责整个文件处理流程，对应的 except 在文件最末尾
     try:
         # 读取数据
         if uploaded_file.name.endswith('csv'):
@@ -74,7 +75,7 @@ if uploaded_file:
             st.dataframe(df.head())
 
         # ==========================================
-        # 3. 加载模型和标准化器 (已修复 Bug)
+        # 3. 加载模型和标准化器
         # ==========================================
         @st.cache_resource
         def load_resources():
@@ -83,10 +84,9 @@ if uploaded_file:
                 rf = joblib.load('rf_vts_model.pkl')
                 # 加载标准化器
                 scaler = joblib.load('scaler.pkl')
-                # ✅ 修复点：这里必须返回 3 个值，与 except 保持一致
+                # 返回 3 个值 (模型, 标准化器, 错误信息)
                 return rf, scaler, None 
             except FileNotFoundError as e:
-                # 失败时返回 3 个值
                 return None, None, str(e)
             except Exception as e:
                 return None, None, str(e)
@@ -190,6 +190,7 @@ if uploaded_file:
                     X_model_input.fillna(0, inplace=True)
                     
                     # 执行标准化
+                    # ⚠️ 这里有个内部 try/except 专门处理 Scaler 错误
                     try:
                         X_scaled_array = scaler.transform(X_model_input)
                         X_ready = pd.DataFrame(X_scaled_array, columns=final_feature_list)
@@ -237,4 +238,37 @@ if uploaded_file:
                     st.divider()
                     st.subheader("📊 Analysis Report")
                     
-                    c1, c2,
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Predicted VO2peak", f"{pred_vo2:.2f} L/min")
+                    
+                    if vt1_res:
+                        c2.metric("VT1", f"{vt1_res['HR']:.0f} bpm", f"Time: {vt1_res['Time']} s")
+                    else:
+                        c2.metric("VT1", "Not Detected")
+                        
+                    if vt2_res:
+                        c3.metric("VT2", f"{vt2_res['HR']:.0f} bpm", f"Time: {vt2_res['Time']} s")
+                    else:
+                        c3.metric("VT2", "Not Detected")
+
+                    st.markdown("### Physiological Response")
+                    fig, ax = plt.subplots(figsize=(12, 5))
+                    ax.plot(df['Time'], df['HR'], 'k-', label='Heart Rate', linewidth=2)
+                    
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==0, color='#eaffea', alpha=0.6, label='Zone 1')
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==1, color='#fff9c4', alpha=0.6, label='Zone 2')
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==2, color='#ffebee', alpha=0.6, label='Zone 3')
+                    
+                    if vt1_res: ax.axvline(vt1_res['Time'], color='blue', linestyle='--', label='VT1')
+                    if vt2_res: ax.axvline(vt2_res['Time'], color='red', linestyle='--', label='VT2')
+                    
+                    ax.set_ylim(bottom=min(df['HR'])*0.9, top=max(df['HR'])*1.1)
+                    ax.legend(loc='upper left')
+                    st.pyplot(fig)
+                    
+                    res_csv = df[['Time', 'HR', 'Stage']].to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Result CSV", data=res_csv, file_name="cpet_results.csv", mime="text/csv")
+
+    except Exception as e:
+        # 这个 except 对应最开始的 try，处理整个流程的未知错误
+        st.error(f"⚠️ Program Error: {e}")
