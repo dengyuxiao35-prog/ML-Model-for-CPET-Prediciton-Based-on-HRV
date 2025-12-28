@@ -40,7 +40,7 @@ with st.sidebar:
     bmi = weight / ((height/100)**2)
     st.info(f"📊 Calculated BMI: **{bmi:.1f}** kg/m²")
     
-    # 性别数值化 (根据您的逻辑: Male=0, Female=1)
+    # 性别数值化 (Male=0, Female=1)
     gender_val = 1 if gender_input == "Female" else 0
     
     st.markdown("---")
@@ -74,47 +74,50 @@ if uploaded_file:
             st.dataframe(df.head())
 
         # ==========================================
-        # 3. 加载模型和标准化器
+        # 3. 加载模型和标准化器 (已修复 Bug)
         # ==========================================
         @st.cache_resource
         def load_resources():
             try:
                 # 加载分类模型
                 rf = joblib.load('rf_vts_model.pkl')
-                # 加载标准化器 (新增!)
+                # 加载标准化器
                 scaler = joblib.load('scaler.pkl')
-                return rf, scaler
+                # ✅ 修复点：这里必须返回 3 个值，与 except 保持一致
+                return rf, scaler, None 
             except FileNotFoundError as e:
+                # 失败时返回 3 个值
+                return None, None, str(e)
+            except Exception as e:
                 return None, None, str(e)
             
         rf_model, scaler, error_msg = load_resources()
 
         if error_msg:
-            st.error(f"❌ Missing File: {error_msg}")
-            st.warning("Please make sure you uploaded both 'rf_vts_model.pkl' AND 'scaler.pkl'.")
+            st.error(f"❌ Load Error: {error_msg}")
+            st.warning("Please make sure you uploaded BOTH 'rf_vts_model.pkl' AND 'scaler.pkl' to GitHub.")
         
         elif rf_model and scaler:
             if st.button("🚀 Start AI Analysis", type="primary"):
                 with st.spinner("Processing features, Scaling data & Predicting..."):
                     
                     # ==========================================
-                    # 4. 特征工程 (Feature Engineering) - 升级版
+                    # 4. 特征工程 (Feature Engineering)
                     # ==========================================
                     X = df.copy()
                     
-                    # (A) 列名强制标准化 (匹配模型训练时的中文列名)
-                    # 无论上传的是英文还是中文，统一转成模型认识的名字
+                    # (A) 列名强制标准化
                     rename_dict = {
                         'RF': 'RF（呼吸频率）',
                         'rf': 'RF（呼吸频率）',
                         'DFA_alpha1': 'DFAα1',
+                        'DFA_Alpha1': 'DFAα1',
                         'dfa_alpha1': 'DFAα1',
-                        'MeanRRi': 'MeanRRi', # 保持原样
+                        'MeanRRi': 'MeanRRi', 
                         'LF_power': 'LF power',
                         'HF_power': 'HF power', 
                         'VLF_power': 'VLF power'
                     }
-                    # 智能重命名：如果列存在就改名
                     for old, new in rename_dict.items():
                         if old in X.columns:
                             X.rename(columns={old: new}, inplace=True)
@@ -127,26 +130,25 @@ if uploaded_file:
                     X['BMI'] = bmi
                     
                     # (C) 生成复杂的动态特征
-                    # 模型的基座信号列表
                     base_signals = ['HR', 'RMSSD', 'DFAα1', 'RF（呼吸频率）', 'MeanRRi', 'SD1', 'SD2', 'VLF power', 'HF power', 'LF power']
                     
-                    # 1. 确保所有基座信号都是数值型
+                    # 1. 确保数值型
                     for col in base_signals:
                         if col in X.columns:
                             X[col] = pd.to_numeric(X[col], errors='coerce').fillna(method='ffill').fillna(0)
                         else:
-                            X[col] = 0 # 缺失补0
+                            X[col] = 0
                     
-                    # 2. 生成滚动特征 (Mean & Std for window 6 & 12)
+                    # 2. 生成滚动特征
                     rolling_cols = []
                     for col in base_signals:
-                        # Window 6 (30s)
+                        # Window 6
                         mean_6 = f'{col}_mean_6'
                         std_6  = f'{col}_std_6'
                         X[mean_6] = X[col].rolling(window=6, min_periods=1).mean()
                         X[std_6]  = X[col].rolling(window=6, min_periods=1).std().fillna(0)
                         
-                        # Window 12 (60s)
+                        # Window 12
                         mean_12 = f'{col}_mean_12'
                         std_12  = f'{col}_std_12'
                         X[mean_12] = X[col].rolling(window=12, min_periods=1).mean()
@@ -154,24 +156,19 @@ if uploaded_file:
                         
                         rolling_cols.extend([mean_6, std_6, mean_12, std_12])
 
-                    # 3. 生成相对特征 (Relative to Session Baseline)
-                    # 需要对“原始信号”和“滚动特征”都计算相对值
+                    # 3. 生成相对特征
                     all_cols_to_normalize = base_signals + rolling_cols
-                    
-                    # 计算基线 (取前 12 个点/60s 的均值作为基线)
                     baseline_df = X.iloc[:12][all_cols_to_normalize].mean()
                     
                     for col in all_cols_to_normalize:
                         rel_col_name = f'{col}_rel_session'
                         base_val = baseline_df[col]
-                        if base_val == 0 or pd.isna(base_val): base_val = 1.0 # 防止除零
+                        if base_val == 0 or pd.isna(base_val): base_val = 1.0
                         X[rel_col_name] = X[col] / base_val
 
                     # ==========================================
                     # 5. 特征对齐与标准化 (Standardization)
                     # ==========================================
-                    
-                    # ⚠️ 严格按照您提供的 26 个特征顺序
                     final_feature_list = [
                         'HR_mean_6', 'RMSSD_mean_12', 'DFAα1_mean_6_rel_session', 'RF（呼吸频率）', 
                         'HR_std_12', 'RMSSD_std_12', 'DFAα1_std_6_rel_session', 'DFAα1_std_12', 
@@ -183,54 +180,44 @@ if uploaded_file:
                         'Height', 'Weight', 'Age', 'Gender', 'BMI'
                     ]
                     
-                    # 提取这 26 列
+                    # 提取数据
                     X_model_input = pd.DataFrame()
                     for feat in final_feature_list:
                         if feat in X.columns:
                             X_model_input[feat] = X[feat]
                         else:
-                            st.warning(f"Feature missing, filled with 0: {feat}")
                             X_model_input[feat] = 0
-                            
-                    # 处理可能的 NaN
                     X_model_input.fillna(0, inplace=True)
                     
-                    # 🔥 关键步骤：执行标准化 (Standardization) 🔥
+                    # 执行标准化
                     try:
                         X_scaled_array = scaler.transform(X_model_input)
-                        # 将结果转回 DataFrame
                         X_ready = pd.DataFrame(X_scaled_array, columns=final_feature_list)
                     except Exception as e:
-                        st.error(f"标准化失败 (Scaler Error): {e}")
+                        st.error(f"Scaler Error: {e}")
                         st.stop()
 
                     # ==========================================
-                    # 6. 执行预测 (Prediction)
+                    # 6. 执行预测
                     # ==========================================
                     
-                    # --- 任务 1: VTs 识别 (RF + Scaled Data) ---
+                    # --- VTs ---
                     pred_stages = rf_model.predict(X_ready)
-                    
-                    # 平滑处理 (60s 窗口众数滤波)
                     smooth_stages = pd.Series(pred_stages).rolling(window=12, center=True).apply(lambda x: x.mode()[0] if not x.mode().empty else x[0]).fillna(method='bfill').fillna(method='ffill')
                     df['Stage'] = smooth_stages
 
-                    # 提取 VT1 / VT2
                     vt1_idx = df[df['Stage'] == 1].index.min()
                     vt2_idx = df[df['Stage'] == 2].index.min()
                     
                     vt1_res = {'Time': df.loc[vt1_idx, 'Time'], 'HR': df.loc[vt1_idx, 'HR']} if pd.notna(vt1_idx) else None
                     vt2_res = {'Time': df.loc[vt2_idx, 'Time'], 'HR': df.loc[vt2_idx, 'HR']} if pd.notna(vt2_idx) else None
 
-                    # --- 任务 2: VO2peak 计算 (线性公式) ---
+                    # --- VO2peak ---
                     peak_df = df.tail(6).mean() 
-                    
-                    # 提取变量 (注意列名已经改成了中文格式)
                     val_RMSSD_peak = peak_df['RMSSD'] if 'RMSSD' in peak_df else 0
                     val_RF_peak    = peak_df['RF（呼吸频率）'] if 'RF（呼吸频率）' in peak_df else 0
                     val_HR_peak    = peak_df['HR'] if 'HR' in peak_df else 0
                     
-                    # 代入公式
                     pred_vo2 = (
                         -2.3123 
                         + (0.530595 * gender_val) 
@@ -250,37 +237,4 @@ if uploaded_file:
                     st.divider()
                     st.subheader("📊 Analysis Report")
                     
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Predicted VO2peak", f"{pred_vo2:.2f} L/min")
-                    
-                    if vt1_res:
-                        c2.metric("VT1", f"{vt1_res['HR']:.0f} bpm", f"Time: {vt1_res['Time']} s")
-                    else:
-                        c2.metric("VT1", "Not Detected")
-                        
-                    if vt2_res:
-                        c3.metric("VT2", f"{vt2_res['HR']:.0f} bpm", f"Time: {vt2_res['Time']} s")
-                    else:
-                        c3.metric("VT2", "Not Detected")
-
-                    st.markdown("### Physiological Response & Stages")
-                    fig, ax = plt.subplots(figsize=(12, 5))
-                    ax.plot(df['Time'], df['HR'], 'k-', label='Heart Rate', linewidth=2)
-                    
-                    # 绘制背景分区
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==0, color='#eaffea', alpha=0.6, label='Zone 1 (Aerobic)')
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==1, color='#fff9c4', alpha=0.6, label='Zone 2 (Threshold)')
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==2, color='#ffebee', alpha=0.6, label='Zone 3 (Severe)')
-                    
-                    if vt1_res: ax.axvline(vt1_res['Time'], color='blue', linestyle='--', label='VT1')
-                    if vt2_res: ax.axvline(vt2_res['Time'], color='red', linestyle='--', label='VT2')
-                    
-                    ax.set_ylim(bottom=min(df['HR'])*0.9, top=max(df['HR'])*1.1)
-                    ax.legend(loc='upper left')
-                    st.pyplot(fig)
-                    
-                    res_csv = df[['Time', 'HR', 'Stage']].to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 Download Result CSV", data=res_csv, file_name="cpet_results.csv", mime="text/csv")
-
-    except Exception as e:
-        st.error(f"⚠️ Program Error: {e}")
+                    c1, c2,
