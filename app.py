@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import joblib
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 # ==========================================
 # 0. 页面配置
@@ -41,13 +40,12 @@ with st.sidebar:
     bmi = weight / ((height/100)**2)
     st.info(f"📊 Calculated BMI: **{bmi:.1f}** kg/m²")
     
-    # 性别数值化 (根据您提供的模型训练逻辑: 男=0, 女=1)
-    # 如果您的公式里 Gender=1 代表男性，请这里改成: 1 if gender_input == "Male" else 0
+    # 性别数值化 (根据您的逻辑: Male=0, Female=1)
     gender_val = 1 if gender_input == "Female" else 0
     
     st.markdown("---")
     st.markdown("**Model Info:**")
-    st.caption("• VTs: Random Forest Classifier")
+    st.caption("• VTs: Random Forest (+Scaler)")
     st.caption("• VO2peak: Linear Regression Formula")
 
 # ==========================================
@@ -58,7 +56,7 @@ st.markdown("""
 This tool uses machine learning to detect **Ventilatory Thresholds (VT1/VT2)** and calculate **Peak Oxygen Uptake ($VO_{2peak}$)**.
 """)
 
-st.warning("📋 Requirement: Upload 5s-interpolated data. Must contain columns like `Time`, `HR`, `RF` (or `RF（呼吸频率）`), `RMSSD`.")
+st.warning("📋 Requirement: Upload 5s-interpolated data. Must contain `Time`, `HR`, `RF`, `RMSSD`, `DFA_alpha1`.")
 
 uploaded_file = st.file_uploader("📂 Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
@@ -72,132 +70,167 @@ if uploaded_file:
             
         st.success(f"✅ Data Loaded Successfully: {len(df)} time points.")
         
-        # 简单预览
         with st.expander("查看原始数据 (Raw Data Preview)"):
             st.dataframe(df.head())
 
         # ==========================================
-        # 3. 加载模型 (只加载 VT 分类模型)
+        # 3. 加载模型和标准化器
         # ==========================================
         @st.cache_resource
-        def load_rf_model():
+        def load_resources():
             try:
-                # 只需要加载这个文件了，vo2_regression_model.pkl 不需要了
+                # 加载分类模型
                 rf = joblib.load('rf_vts_model.pkl')
-                return rf
-            except FileNotFoundError:
-                st.error("❌ 'rf_vts_model.pkl' not found! Please upload it to your GitHub/Folder.")
-                return None
+                # 加载标准化器 (新增!)
+                scaler = joblib.load('scaler.pkl')
+                return rf, scaler
+            except FileNotFoundError as e:
+                return None, None, str(e)
             
-        rf_model = load_rf_model()
+        rf_model, scaler, error_msg = load_resources()
 
-        if rf_model:
+        if error_msg:
+            st.error(f"❌ Missing File: {error_msg}")
+            st.warning("Please make sure you uploaded both 'rf_vts_model.pkl' AND 'scaler.pkl'.")
+        
+        elif rf_model and scaler:
             if st.button("🚀 Start AI Analysis", type="primary"):
-                with st.spinner("Processing signals & Calculating VO2max..."):
+                with st.spinner("Processing features, Scaling data & Predicting..."):
                     
                     # ==========================================
-                    # 4. 特征工程 (Feature Engineering)
+                    # 4. 特征工程 (Feature Engineering) - 升级版
                     # ==========================================
                     X = df.copy()
                     
-                    # (A) 列名标准化 (兼容中文列名)
-                    # 这样无论上传的是 RF 还是 RF（呼吸频率），后面都叫 RF
-                    col_mapping = {
-                        'RF（呼吸频率）': 'RF', 
-                        'DFA_alpha1': 'DFAα1', 
-                        'LF_power': 'LF power', 
+                    # (A) 列名强制标准化 (匹配模型训练时的中文列名)
+                    # 无论上传的是英文还是中文，统一转成模型认识的名字
+                    rename_dict = {
+                        'RF': 'RF（呼吸频率）',
+                        'rf': 'RF（呼吸频率）',
+                        'DFA_alpha1': 'DFAα1',
+                        'dfa_alpha1': 'DFAα1',
+                        'MeanRRi': 'MeanRRi', # 保持原样
+                        'LF_power': 'LF power',
                         'HF_power': 'HF power', 
                         'VLF_power': 'VLF power'
                     }
-                    X.rename(columns=col_mapping, inplace=True)
+                    # 智能重命名：如果列存在就改名
+                    for old, new in rename_dict.items():
+                        if old in X.columns:
+                            X.rename(columns={old: new}, inplace=True)
                     
-                    # (B) 注入静态特征 (用于 RF 分类模型)
+                    # (B) 注入静态特征
                     X['Age'] = age
                     X['Gender'] = gender_val
                     X['Height'] = height
                     X['Weight'] = weight
                     X['BMI'] = bmi
-                    X['HRrest'] = hr_rest
                     
-                    # (C) 自动生成动态特征 (滚动/相对)
-                    base_signals = ['HR', 'RF', 'MeanRRi', 'RMSSD', 'LF power', 'HF power', 'VLF power', 'DFAα1', 'SD1', 'SD2']
+                    # (C) 生成复杂的动态特征
+                    # 模型的基座信号列表
+                    base_signals = ['HR', 'RMSSD', 'DFAα1', 'RF（呼吸频率）', 'MeanRRi', 'SD1', 'SD2', 'VLF power', 'HF power', 'LF power']
                     
+                    # 1. 确保所有基座信号都是数值型
                     for col in base_signals:
                         if col in X.columns:
-                            # 转数值，防报错
-                            X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
-                            
-                            # 滚动特征
-                            X[f'{col}_mean_6'] = X[col].rolling(window=6, min_periods=1).mean()
-                            X[f'{col}_std_6'] = X[col].rolling(window=6, min_periods=1).std().fillna(0)
-                            X[f'{col}_mean_12'] = X[col].rolling(window=12, min_periods=1).mean()
-                            X[f'{col}_std_12'] = X[col].rolling(window=12, min_periods=1).std().fillna(0)
-                            
-                            # 相对特征
-                            baseline = hr_rest if col == 'HR' else (X[col].iloc[:6].mean() if X[col].iloc[:6].mean() != 0 else 1.0)
-                            X[f'{col}_rel_session'] = X[col] / baseline
+                            X[col] = pd.to_numeric(X[col], errors='coerce').fillna(method='ffill').fillna(0)
                         else:
-                            # 缺失填0
-                            for suffix in ['_mean_6', '_std_6', '_mean_12', '_std_12', '_rel_session']:
-                                X[f'{col}{suffix}'] = 0
+                            X[col] = 0 # 缺失补0
+                    
+                    # 2. 生成滚动特征 (Mean & Std for window 6 & 12)
+                    rolling_cols = []
+                    for col in base_signals:
+                        # Window 6 (30s)
+                        mean_6 = f'{col}_mean_6'
+                        std_6  = f'{col}_std_6'
+                        X[mean_6] = X[col].rolling(window=6, min_periods=1).mean()
+                        X[std_6]  = X[col].rolling(window=6, min_periods=1).std().fillna(0)
+                        
+                        # Window 12 (60s)
+                        mean_12 = f'{col}_mean_12'
+                        std_12  = f'{col}_std_12'
+                        X[mean_12] = X[col].rolling(window=12, min_periods=1).mean()
+                        X[std_12]  = X[col].rolling(window=12, min_periods=1).std().fillna(0)
+                        
+                        rolling_cols.extend([mean_6, std_6, mean_12, std_12])
 
-                    # (D) 特征对齐 (准备给随机森林吃)
-                    try:
-                        if hasattr(rf_model, "feature_names_in_"):
-                            model_features = rf_model.feature_names_in_
+                    # 3. 生成相对特征 (Relative to Session Baseline)
+                    # 需要对“原始信号”和“滚动特征”都计算相对值
+                    all_cols_to_normalize = base_signals + rolling_cols
+                    
+                    # 计算基线 (取前 12 个点/60s 的均值作为基线)
+                    baseline_df = X.iloc[:12][all_cols_to_normalize].mean()
+                    
+                    for col in all_cols_to_normalize:
+                        rel_col_name = f'{col}_rel_session'
+                        base_val = baseline_df[col]
+                        if base_val == 0 or pd.isna(base_val): base_val = 1.0 # 防止除零
+                        X[rel_col_name] = X[col] / base_val
+
+                    # ==========================================
+                    # 5. 特征对齐与标准化 (Standardization)
+                    # ==========================================
+                    
+                    # ⚠️ 严格按照您提供的 26 个特征顺序
+                    final_feature_list = [
+                        'HR_mean_6', 'RMSSD_mean_12', 'DFAα1_mean_6_rel_session', 'RF（呼吸频率）', 
+                        'HR_std_12', 'RMSSD_std_12', 'DFAα1_std_6_rel_session', 'DFAα1_std_12', 
+                        'MeanRRi_std_6', 'SD2_std_12_rel_session', 'RF（呼吸频率）_std_12', 
+                        'HR_rel_session', 'SD1_mean_12_rel_session', 'VLF power_mean_12_rel_session', 
+                        'RF（呼吸频率）_rel_session', 'HR_std_12_rel_session', 'SD1_std_12_rel_session', 
+                        'MeanRRi_std_6_rel_session', 'HF power_std_12_rel_session', 
+                        'RF（呼吸频率）_std_6_rel_session', 'RF（呼吸频率）_std_12_rel_session', 
+                        'Height', 'Weight', 'Age', 'Gender', 'BMI'
+                    ]
+                    
+                    # 提取这 26 列
+                    X_model_input = pd.DataFrame()
+                    for feat in final_feature_list:
+                        if feat in X.columns:
+                            X_model_input[feat] = X[feat]
                         else:
-                            # 兜底：用所有数值列
-                            model_features = X.select_dtypes(include=[np.number]).columns
-                        
-                        # 补齐缺失列
-                        for f in model_features:
-                            if f not in X.columns:
-                                X[f] = 0
-                        X_final = X[model_features].fillna(0)
-                        
+                            st.warning(f"Feature missing, filled with 0: {feat}")
+                            X_model_input[feat] = 0
+                            
+                    # 处理可能的 NaN
+                    X_model_input.fillna(0, inplace=True)
+                    
+                    # 🔥 关键步骤：执行标准化 (Standardization) 🔥
+                    try:
+                        X_scaled_array = scaler.transform(X_model_input)
+                        # 将结果转回 DataFrame
+                        X_ready = pd.DataFrame(X_scaled_array, columns=final_feature_list)
                     except Exception as e:
-                        st.error(f"Feature processing error: {e}")
+                        st.error(f"标准化失败 (Scaler Error): {e}")
                         st.stop()
 
                     # ==========================================
-                    # 5. 执行预测 (Prediction)
+                    # 6. 执行预测 (Prediction)
                     # ==========================================
                     
-                    # --- 任务 1: VTs 识别 (随机森林) ---
-                    pred_stages = rf_model.predict(X_final)
-                    # 平滑处理
+                    # --- 任务 1: VTs 识别 (RF + Scaled Data) ---
+                    pred_stages = rf_model.predict(X_ready)
+                    
+                    # 平滑处理 (60s 窗口众数滤波)
                     smooth_stages = pd.Series(pred_stages).rolling(window=12, center=True).apply(lambda x: x.mode()[0] if not x.mode().empty else x[0]).fillna(method='bfill').fillna(method='ffill')
                     df['Stage'] = smooth_stages
 
-                    # 提取时间点
+                    # 提取 VT1 / VT2
                     vt1_idx = df[df['Stage'] == 1].index.min()
                     vt2_idx = df[df['Stage'] == 2].index.min()
                     
                     vt1_res = {'Time': df.loc[vt1_idx, 'Time'], 'HR': df.loc[vt1_idx, 'HR']} if pd.notna(vt1_idx) else None
                     vt2_res = {'Time': df.loc[vt2_idx, 'Time'], 'HR': df.loc[vt2_idx, 'HR']} if pd.notna(vt2_idx) else None
 
-                    # --- 任务 2: VO2peak 计算 (使用您的线性公式) ---
-                    # 1. 提取峰值数据 (最后 30s 均值)
-                    # 注意：如果文件最后几行是恢复期，可能需要调整这里取值逻辑
+                    # --- 任务 2: VO2peak 计算 (线性公式) ---
                     peak_df = df.tail(6).mean() 
                     
-                    # 2. 提取公式需要的变量
-                    # 如果列名不存在，默认为 0
+                    # 提取变量 (注意列名已经改成了中文格式)
                     val_RMSSD_peak = peak_df['RMSSD'] if 'RMSSD' in peak_df else 0
-                    val_RF_peak    = peak_df['RF'] if 'RF' in peak_df else 0
+                    val_RF_peak    = peak_df['RF（呼吸频率）'] if 'RF（呼吸频率）' in peak_df else 0
                     val_HR_peak    = peak_df['HR'] if 'HR' in peak_df else 0
                     
-                    # 3. 代入公式 (直接计算)
-                    # VO2max (L/min) = -2.3123 
-                    #                + (0.530595 * Gender) 
-                    #                + (0.039042 * RMSSD_peak_mean)
-                    #                + (0.028138 * Age) 
-                    #                + (0.025320 * Weight)
-                    #                + (0.013507 * RF_peak_mean)
-                    #                - (0.010645 * HRrest) 
-                    #                + (0.010629 * Height) 
-                    #                + (0.003778 * HR_peak_mean)
-                    
+                    # 代入公式
                     pred_vo2 = (
                         -2.3123 
                         + (0.530595 * gender_val) 
@@ -209,12 +242,10 @@ if uploaded_file:
                         + (0.010629 * height) 
                         + (0.003778 * val_HR_peak)
                     )
-                    
-                    # 防止出现负数 (兜底)
                     if pred_vo2 < 0: pred_vo2 = 0.5 
 
                     # ==========================================
-                    # 6. 结果展示
+                    # 7. 结果展示
                     # ==========================================
                     st.divider()
                     st.subheader("📊 Analysis Report")
@@ -232,14 +263,14 @@ if uploaded_file:
                     else:
                         c3.metric("VT2", "Not Detected")
 
-                    st.markdown("### Physiological Response")
+                    st.markdown("### Physiological Response & Stages")
                     fig, ax = plt.subplots(figsize=(12, 5))
                     ax.plot(df['Time'], df['HR'], 'k-', label='Heart Rate', linewidth=2)
                     
-                    # 颜色分区
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==0, color='#eaffea', alpha=0.6, label='Zone 1')
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==1, color='#fff9c4', alpha=0.6, label='Zone 2')
-                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==2, color='#ffebee', alpha=0.6, label='Zone 3')
+                    # 绘制背景分区
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==0, color='#eaffea', alpha=0.6, label='Zone 1 (Aerobic)')
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==1, color='#fff9c4', alpha=0.6, label='Zone 2 (Threshold)')
+                    ax.fill_between(df['Time'], 0, 220, where=df['Stage']==2, color='#ffebee', alpha=0.6, label='Zone 3 (Severe)')
                     
                     if vt1_res: ax.axvline(vt1_res['Time'], color='blue', linestyle='--', label='VT1')
                     if vt2_res: ax.axvline(vt2_res['Time'], color='red', linestyle='--', label='VT2')
@@ -249,7 +280,7 @@ if uploaded_file:
                     st.pyplot(fig)
                     
                     res_csv = df[['Time', 'HR', 'Stage']].to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 Download Results", data=res_csv, file_name="results.csv", mime="text/csv")
+                    st.download_button("📥 Download Result CSV", data=res_csv, file_name="cpet_results.csv", mime="text/csv")
 
     except Exception as e:
-        st.error(f"⚠️ Error: {e}")
+        st.error(f"⚠️ Program Error: {e}")
