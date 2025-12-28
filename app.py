@@ -45,7 +45,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("**Model Info:**")
-    st.caption("• VTs: Random Forest (+Scaler)")
+    st.caption("• VTs: Random Forest (+Hybrid Scaler)")
     st.caption("• VO2peak: Linear Regression Formula")
 
 # ==========================================
@@ -61,7 +61,6 @@ st.warning("📋 Requirement: Upload 5s-interpolated data. Must contain `Time`, 
 uploaded_file = st.file_uploader("📂 Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
 if uploaded_file:
-    # ⚠️ 这里的 try 负责整个文件处理流程，对应的 except 在文件最末尾
     try:
         # 读取数据
         if uploaded_file.name.endswith('csv'):
@@ -84,7 +83,6 @@ if uploaded_file:
                 rf = joblib.load('rf_vts_model.pkl')
                 # 加载标准化器
                 scaler = joblib.load('scaler.pkl')
-                # 返回 3 个值 (模型, 标准化器, 错误信息)
                 return rf, scaler, None 
             except FileNotFoundError as e:
                 return None, None, str(e)
@@ -116,7 +114,10 @@ if uploaded_file:
                         'MeanRRi': 'MeanRRi', 
                         'LF_power': 'LF power',
                         'HF_power': 'HF power', 
-                        'VLF_power': 'VLF power'
+                        'VLF_power': 'VLF power',
+                        'SD1': 'SD1',
+                        'SD2': 'SD2',
+                        'RMSSD': 'RMSSD'
                     }
                     for old, new in rename_dict.items():
                         if old in X.columns:
@@ -129,7 +130,7 @@ if uploaded_file:
                     X['Weight'] = weight
                     X['BMI'] = bmi
                     
-                    # (C) 生成复杂的动态特征
+                    # (C) 生成所有可能的动态特征
                     base_signals = ['HR', 'RMSSD', 'DFAα1', 'RF（呼吸频率）', 'MeanRRi', 'SD1', 'SD2', 'VLF power', 'HF power', 'LF power']
                     
                     # 1. 确保数值型
@@ -139,7 +140,7 @@ if uploaded_file:
                         else:
                             X[col] = 0
                     
-                    # 2. 生成滚动特征
+                    # 2. 生成滚动特征 (全部组合都生成，以防万一)
                     rolling_cols = []
                     for col in base_signals:
                         # Window 6
@@ -167,9 +168,12 @@ if uploaded_file:
                         X[rel_col_name] = X[col] / base_val
 
                     # ==========================================
-                    # 5. 特征对齐与标准化 (Standardization)
+                    # 5. 特征对齐与“混合”标准化 (Hybrid Scaling)
                     # ==========================================
-                    final_feature_list = [
+                    
+                    # 1. 提取Scaler想要的特征名单 (26个)
+                    # 这是我刚刚从你的 scaler.pkl 里解剖出来的
+                    scaler_features = [
                         'HR_mean_6', 'RMSSD_mean_12', 'DFAα1_mean_6_rel_session', 'RF（呼吸频率）', 
                         'HR_std_12', 'RMSSD_std_12', 'DFAα1_std_6_rel_session', 'DFAα1_std_12', 
                         'MeanRRi_std_6', 'SD2_std_12_rel_session', 'RF（呼吸频率）_std_12', 
@@ -180,30 +184,61 @@ if uploaded_file:
                         'Height', 'Weight', 'Age', 'Gender', 'BMI'
                     ]
                     
-                    # 提取数据
-                    X_model_input = pd.DataFrame()
-                    for feat in final_feature_list:
+                    # 2. 提取Model想要的特征名单 (26个)
+                    # 这是从 rf_vts_model.pkl 里解剖出来的
+                    model_features = [
+                        'HR_mean_6', 'RMSSD_mean_12', 'DFAα1_mean_6_rel_session', 'RF（呼吸频率）', 
+                        'HR_std_12', 'SD1_std_6_rel_session', 'SD1_std_12_rel_session', 
+                        'DFAα1_std_6_rel_session', 'DFAα1_std_12', 'MeanRRi_std_6', 
+                        'SD2_std_12_rel_session', 'RF（呼吸频率）_std_12', 'HR_rel_session', 
+                        'SD1_mean_12_rel_session', 'VLF power_mean_12_rel_session', 
+                        'RF（呼吸频率）_rel_session', 'HR_std_12_rel_session', 'MeanRRi_std_6_rel_session', 
+                        'HF power_std_12_rel_session', 'RF（呼吸频率）_std_6_rel_session', 
+                        'RF（呼吸频率）_std_12_rel_session', 'Height', 'Weight', 'Age', 'Gender', 'BMI'
+                    ]
+
+                    # 3. 准备喂给 Scaler 的数据
+                    X_for_scaler = pd.DataFrame()
+                    for feat in scaler_features:
                         if feat in X.columns:
-                            X_model_input[feat] = X[feat]
+                            X_for_scaler[feat] = X[feat]
                         else:
-                            X_model_input[feat] = 0
-                    X_model_input.fillna(0, inplace=True)
-                    
-                    # 执行标准化
-                    # ⚠️ 这里有个内部 try/except 专门处理 Scaler 错误
+                            X_for_scaler[feat] = 0 # 缺失补0
+                    X_for_scaler.fillna(0, inplace=True)
+
+                    # 4. 执行标准化
                     try:
-                        X_scaled_array = scaler.transform(X_model_input)
-                        X_ready = pd.DataFrame(X_scaled_array, columns=final_feature_list)
+                        X_scaled_np = scaler.transform(X_for_scaler)
+                        X_scaled_df = pd.DataFrame(X_scaled_np, columns=scaler_features)
                     except Exception as e:
                         st.error(f"Scaler Error: {e}")
                         st.stop()
+                        
+                    # 5. 拼装给 Model 的最终数据
+                    # 逻辑：只要 Scaler 处理过的，就用处理过的；
+                    # 如果 Model 要的那个特殊特征 (SD1_std_6_rel_session) Scaler 没处理，就用原始计算值
+                    
+                    X_final_model = pd.DataFrame()
+                    
+                    for feat in model_features:
+                        if feat in X_scaled_df.columns:
+                            # 优先用标准化过的数据
+                            X_final_model[feat] = X_scaled_df[feat]
+                        elif feat in X.columns:
+                            # 如果 Scaler 里没有 (比如 SD1_std_6_rel_session)，就用算出来的原始值
+                            # 因为它是 _rel_session (相对值)，本身就是归一化的，直接用也不会有大问题
+                            X_final_model[feat] = X[feat]
+                        else:
+                            X_final_model[feat] = 0
+                            
+                    X_final_model.fillna(0, inplace=True)
 
                     # ==========================================
                     # 6. 执行预测
                     # ==========================================
                     
                     # --- VTs ---
-                    pred_stages = rf_model.predict(X_ready)
+                    pred_stages = rf_model.predict(X_final_model)
                     smooth_stages = pd.Series(pred_stages).rolling(window=12, center=True).apply(lambda x: x.mode()[0] if not x.mode().empty else x[0]).fillna(method='bfill').fillna(method='ffill')
                     df['Stage'] = smooth_stages
 
@@ -270,5 +305,4 @@ if uploaded_file:
                     st.download_button("📥 Download Result CSV", data=res_csv, file_name="cpet_results.csv", mime="text/csv")
 
     except Exception as e:
-        # 这个 except 对应最开始的 try，处理整个流程的未知错误
         st.error(f"⚠️ Program Error: {e}")
