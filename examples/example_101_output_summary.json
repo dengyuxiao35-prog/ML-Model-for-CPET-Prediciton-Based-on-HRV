@@ -7,7 +7,7 @@
     "Resting_HR_bpm": 61
   },
   "source": {
-    "source_file": "individual_id_files/zxx.xlsx",
+    "source_file": "raw_subject_101.xlsx (not included)",
     "notes": "De-identified example (identifiers removed)."
   },
   "sample_input": {
