@@ -178,7 +178,6 @@ with st.expander("📦 Example Data (Download)", expanded=False):
     examples_dir = base_dir / "examples"
 
     example_specs = [
-        ("Synthetic sample", "sample_input.csv", "sample_output_summary.json"),
         ("De-identified example 101", "example_101_input.csv", "example_101_output_summary.json"),
     ]
 

@@ -27,10 +27,6 @@ Participant demographics are provided in the sidebar (Gender/Age/Height/Weight/R
 ## Example data + expected results
 
 Files:
-- Synthetic input: `examples/sample_input.csv`
-- Synthetic expected output (PredStage per time point): `examples/sample_output_cpet_results.csv`
-- Synthetic expected summary (VT1/VT2 + VO2peak): `examples/sample_output_summary.json`
-
 - De-identified input: `examples/example_101_input.csv`
 - De-identified expected output (TrueStage + PredStage): `examples/example_101_output_cpet_results.csv`
 - De-identified expected summary: `examples/example_101_output_summary.json`
@@ -38,10 +34,9 @@ Files:
 To reproduce the expected results, set the sidebar as:
 - Gender: **Male**
 - Age: **25**
-- Height: **175 cm**
-- Weight: **70 kg**
-- Resting HR: **60 bpm**
+- Height: **176.3 cm**
+- Weight: **72.2 kg**
+- Resting HR: **61 bpm**
 
 Notes:
-- `sample_input.csv` is **synthetic** (not real participant data).
 - `example_101_input.csv` is **de-identified** (identifiers removed).
