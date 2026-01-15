@@ -1,0 +1,47 @@
+{
+  "demo_settings": {
+    "Gender": "Male",
+    "Age": 25,
+    "Height_cm": 175.0,
+    "Weight_kg": 70.0,
+    "Resting_HR_bpm": 60
+  },
+  "model_artifacts": {
+    "rf_vts_model.pkl": "RandomForestClassifier (3-class stage prediction)",
+    "scaler.pkl": "StandardScaler for 26 features"
+  },
+  "sample_input": {
+    "path": "examples/sample_input.csv",
+    "rows": 241,
+    "columns": [
+      "Time",
+      "HR",
+      "RR",
+      "RMSSD",
+      "DFA_alpha1",
+      "MeanRRi",
+      "SD1",
+      "SD2",
+      "HF_power",
+      "VLF_power"
+    ],
+    "random_seed": 3
+  },
+  "sample_output": {
+    "path": "examples/sample_output_cpet_results.csv",
+    "stage_counts": {
+      "0": 133,
+      "1": 63,
+      "2": 45
+    },
+    "VT1": {
+      "Time_s": 660.0,
+      "HR_bpm": 149.1116389327111
+    },
+    "VT2": {
+      "Time_s": 975.0,
+      "HR_bpm": 175.96472120723664
+    },
+    "Predicted_VO2peak_L_min": 3.483662440280027
+  }
+}
