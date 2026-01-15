@@ -1,0 +1,48 @@
+{
+  "demo_settings": {
+    "Gender": "Male",
+    "Age": 25,
+    "Height_cm": 176.3,
+    "Weight_kg": 72.2,
+    "Resting_HR_bpm": 61
+  },
+  "source": {
+    "source_file": "individual_id_files/zxx.xlsx",
+    "notes": "De-identified example (identifiers removed)."
+  },
+  "sample_input": {
+    "path": "examples/example_101_input.csv",
+    "rows": 137,
+    "time_step_seconds_median": 5.0,
+    "columns": [
+      "Time",
+      "HR",
+      "RR",
+      "RMSSD",
+      "DFA_alpha1",
+      "MeanRRi",
+      "SD1",
+      "SD2",
+      "HF_power",
+      "VLF_power",
+      "TrueStage"
+    ]
+  },
+  "sample_output": {
+    "path": "examples/example_101_output_cpet_results.csv",
+    "stage_counts": {
+      "0": 59,
+      "1": 55,
+      "2": 23
+    },
+    "VT1": {
+      "Time_s": 290.0,
+      "HR_bpm": 118.1024
+    },
+    "VT2": {
+      "Time_s": 565.0,
+      "HR_bpm": 159.6698
+    },
+    "Predicted_VO2peak_L_min": 3.0459504525666667
+  }
+}

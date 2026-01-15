@@ -177,29 +177,44 @@ with st.expander("📦 Example Data (Download)", expanded=False):
     base_dir = Path(__file__).resolve().parent
     examples_dir = base_dir / "examples"
 
-    sample_in = examples_dir / "sample_input.csv"
-    sample_summary = examples_dir / "sample_output_summary.json"
+    example_specs = [
+        ("Synthetic sample", "sample_input.csv", "sample_output_summary.json"),
+        ("De-identified example 101", "example_101_input.csv", "example_101_output_summary.json"),
+    ]
 
-    if sample_in.exists():
-        st.download_button(
-            "Download `sample_input.csv`",
-            data=sample_in.read_bytes(),
-            file_name="sample_input.csv",
-            mime="text/csv",
-        )
+    for label, input_name, summary_name in example_specs:
+        st.markdown(f"**{label}**")
 
-    if sample_summary.exists():
-        try:
-            summary_obj = json.loads(sample_summary.read_text(encoding="utf-8"))
-            demo_settings = summary_obj.get("demo_settings", {})
-            sample_output = summary_obj.get("sample_output", {})
+        input_path = examples_dir / input_name
+        summary_path = examples_dir / summary_name
 
-            st.caption("Use these settings in the sidebar for the expected results:")
-            st.json(demo_settings)
-            st.caption("Expected output summary (from the provided model artifacts):")
-            st.json(sample_output)
-        except Exception:
-            st.caption("`sample_output_summary.json` exists but failed to parse.")
+        if input_path.exists():
+            st.download_button(
+                f"Download `{input_name}`",
+                data=input_path.read_bytes(),
+                file_name=input_name,
+                mime="text/csv",
+                key=f"dl_{input_name}",
+            )
+        else:
+            st.caption(f"Missing `{input_name}` in `examples/`.")
+
+        if summary_path.exists():
+            try:
+                summary_obj = json.loads(summary_path.read_text(encoding="utf-8"))
+                demo_settings = summary_obj.get("demo_settings", {})
+                sample_output = summary_obj.get("sample_output", {})
+
+                st.caption("Use these settings in the sidebar for the expected results:")
+                st.json(demo_settings)
+                st.caption("Expected output summary (from the provided model artifacts):")
+                st.json(sample_output)
+            except Exception:
+                st.caption(f"`{summary_name}` exists but failed to parse.")
+        else:
+            st.caption(f"Missing `{summary_name}` in `examples/`.")
+
+        st.divider()
 
 uploaded_file = st.file_uploader("📂 Upload Excel or CSV File", type=["xlsx", "xls", "csv"])
 
